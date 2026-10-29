@@ -5,6 +5,8 @@ export type Line = {
   text: string;
   /** The metacognizer's fuller reasoning and evidence, for the working agent only. */
   detail?: string;
+  /** Set on an answer to the working agent's consult: the agent was given it in full. */
+  isSentToClaude?: true;
 };
 
 /** The metacognizer agent at work: a check of the session, a reply to the person, or the working agent consulting it. No agentId while it starts. */

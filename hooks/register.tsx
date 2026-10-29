@@ -32,9 +32,16 @@ Before judging the current approach, list for yourself two or three other ways t
 
 If the session's direction is already the simple, high-level one, or you would not bet that your point changes what the person does, your final message is exactly: ${AGREE}
 
-Otherwise your final message has two parts and nothing else:
-1. For the person: two or three short sentences in very plain words. Say what to do instead and why it is simpler. No jargon, no lists, no file paths unless one is the point.
-2. A line holding only ---, then for the working agent: your fuller reasoning, the evidence you found (files, commands, what they showed) and the first cheap step that would confirm the move.`
+Otherwise write your final message in this shape, with no numbering and no labels:
+
+A note for the person: at most three short sentences and under 50 words, in words someone outside the code would follow. Say what to do instead and why it is simpler. No jargon, code names, lists or file paths.
+Then a line holding only ---.
+Then, for the working agent: your fuller reasoning, the evidence you found (files, commands, what they showed) and the first cheap step that would confirm the move.
+
+For example:
+Measure where the time goes before adding parallel searches. A one-line change may remove the wait entirely, with far less to build.
+---
+(the reasoning, evidence and first step)`
 
 const REPLY = `The person is talking to you, not to the agent doing the work. Reply to their last message as the metacognizer in two or three short sentences of very plain words. Look at the code if it helps you answer.`
 
@@ -132,7 +139,8 @@ async function finish($: EngineInterface, kind: Run['kind'], answer: string | nu
     const now = await $.clock.now()
     await update($, checkedAt, () => now)
   }
-  if (text !== '' && !(kind !== 'reply' && text.startsWith(AGREE))) await say($, point(text))
+  if (text !== '' && !(kind !== 'reply' && text.startsWith(AGREE)))
+    await say($, kind === 'consult' ? { ...point(text), isSentToClaude: true } : point(text))
   if (kind === 'consult' && text !== '') await deliver($, `The metacognizer answered your consult:\n\n${text}`)
   if ((await read($, thread)).at(-1)?.from === 'you') await start($, 'reply')
 }
@@ -270,7 +278,16 @@ export const register: Register = on => {
           ◆ Metacognition{thinking ? <Text dimColor> thinking…</Text> : ''}
         </Text>
         {lines.map(l =>
-          l.from === 'metacognizer' ? <Markdown text={l.text} /> : <Text dimColor>› {l.from === 'claude' ? 'Claude asked: ' : ''}{l.text}</Text>,
+          l.from !== 'metacognizer' ? (
+            <Text dimColor>› {l.from === 'claude' ? 'Claude asked: ' : ''}{l.text}</Text>
+          ) : l.isSentToClaude ? (
+            <Box flexDirection="column">
+              <Markdown text={l.text} />
+              <Text dimColor>✓ Claude has the full answer</Text>
+            </Box>
+          ) : (
+            <Markdown text={l.text} />
+          ),
         )}
         <Box flexDirection="row" columnGap={2}>
           <Input key="reply" autoFocus placeholder="click here to reply, or type /meta <your reply>" submitLabel="send" onSubmit={text => void discuss($, text)} />
