@@ -34,6 +34,7 @@ function engine(on: On) {
   })
   on('session.messages', () => ({ value: MESSAGES }))
   on('session.cwd', () => ({ value: '/repo' }))
+  on('session.turns', () => ({ value: 0 }))
   on('tool.call', () => ({ result: {} }))
   on('ui.toast', () => ({ value: undefined }))
   on('ui.render', ($, e) => {

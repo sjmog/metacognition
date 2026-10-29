@@ -6,6 +6,7 @@ import type { Line, Run } from '../types'
 const COMMAND = 'meta'
 const AGENT = 'metacognition:metacognizer'
 const TOOL = 'mcp__metacognition__consult'
+const TIP_EVERY_PROMPTS = 10
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
 
 const isOn = atom({ plugin: 'metacognition', key: 'isOn' } as const, true)
@@ -245,6 +246,9 @@ export const register: Register = on => {
     const lines = all.slice(await read($, shownFrom))
     const thinking = (await read($, running)) !== null
     const at = await read($, checkedAt)
+    // Read so each turn's start and end redraws the band; the tip shows at startup and every tenth prompt.
+    await read($, isWorking)
+    const showsTip = (await $.session.turns()) % TIP_EVERY_PROMPTS === 0
 
     if (lines.length === 0) {
       const status = thinking
@@ -255,7 +259,7 @@ export const register: Register = on => {
       return (
         <Box flexDirection="row" columnGap={2} borderStyle="round" borderColor="cyan" borderDimColor paddingX={1}>
           <Text color="cyan">◇ Metacognition {status}</Text>
-          <Input key="ask" autoFocus placeholder="ask the metacognizer" submitLabel="ask" onSubmit={text => void discuss($, text)} />
+          <Input key="ask" autoFocus placeholder={showsTip ? 'Tip: click here to ask the metacognizer, or type /meta <your question>' : undefined} submitLabel="ask" onSubmit={text => void discuss($, text)} />
         </Box>
       )
     }
@@ -269,7 +273,7 @@ export const register: Register = on => {
           l.from === 'metacognizer' ? <Markdown text={l.text} /> : <Text dimColor>› {l.from === 'claude' ? 'Claude asked: ' : ''}{l.text}</Text>,
         )}
         <Box flexDirection="row" columnGap={2}>
-          <Input key="reply" autoFocus placeholder="reply to the metacognizer" submitLabel="send" onSubmit={text => void discuss($, text)} />
+          <Input key="reply" autoFocus placeholder="click here to reply, or type /meta <your reply>" submitLabel="send" onSubmit={text => void discuss($, text)} />
           <Button key="tell" label="Tell Claude" onPress={() => void $.prompt.fill({ text: forClaude(lines), mode: 'insert' })} />
           <Button key="dismiss" label="Dismiss" onPress={() => void update($, shownFrom, () => all.length)} />
         </Box>
