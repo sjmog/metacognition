@@ -32,11 +32,8 @@ Before judging the current approach, list for yourself two or three other ways t
 
 If the session's direction is already the simple, high-level one, or you would not bet that your point changes what the person does, your final message is exactly: ${AGREE}
 
-Otherwise write your final message in this shape, with no numbering and no labels:
-
-A note for the person: at most three short sentences and under 50 words, in words someone outside the code would follow. Say what to do instead and why it is simpler. No jargon, code names, lists or file paths.
-Then a line holding only ---.
-Then, for the working agent: your fuller reasoning, the evidence you found (files, commands, what they showed) and the first cheap step that would confirm the move.
+Otherwise your final message opens with what the person will read: at most three short sentences and under 50 words, in words someone outside the code would follow, saying what to do instead and why it is simpler. Start straight in with the point itself: no heading, label, numbering, jargon, code names, lists or file paths.
+After that, a line holding only ---, and below it, for the working agent: your fuller reasoning, the evidence you found (files, commands, what they showed) and the first cheap step that would confirm the move.
 
 For example:
 Measure where the time goes before adding parallel searches. A one-line change may remove the wait entirely, with far less to build.
