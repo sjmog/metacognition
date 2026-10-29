@@ -1,0 +1,5 @@
+{
+  "name": "metacognition",
+  "owner": { "name": "Sam Morgan" },
+  "plugins": [{ "name": "metacognition", "source": "./" }]
+}
