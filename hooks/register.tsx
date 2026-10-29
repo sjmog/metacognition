@@ -3,7 +3,7 @@ import type { EngineInterface, Register, SessionMessage, ToolUseSummary } from '
 
 import type { Line, Run } from '../types'
 
-const COMMAND = 'metacognition'
+const COMMAND = 'meta'
 const AGENT = 'metacognition:metacognizer'
 const TOOL = 'mcp__metacognition__consult'
 const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
@@ -165,8 +165,8 @@ export const register: Register = on => {
     })
     await $.command.register({
       name: COMMAND,
-      description: 'Metacognition mode: on, off, or now to check at once. Bare toggles it.',
-      argumentHint: '[on|off|now]',
+      description: 'Ask the metacognizer a question, or: on, off, now (check at once).',
+      argumentHint: '[question|on|off|now]',
       immediate: true,
     })
     return next(e)
@@ -185,14 +185,18 @@ export const register: Register = on => {
 
   on('command.run', { command: COMMAND }, async ($, e) => {
     const arg = e.args.trim()
+    if (arg === 'on' || arg === 'off') {
+      await update($, isOn, () => arg === 'on')
+      return { text: `Metacognition ${arg} for this session.` }
+    }
+    if (!(await read($, isOn))) return { text: 'Metacognition is off for this session. /meta on to turn it on.' }
+    if (arg === '') return { text: 'Metacognition is on. /meta <question> asks it, /meta now checks at once, /meta off turns it off.' }
     if (arg === 'now') {
-      if (!(await read($, isOn))) return { text: 'Metacognition is off. /metacognition on first.' }
       checkSoon($)
       return { text: 'Metacognition is checking.' }
     }
-    const turnOn = arg === 'on' ? true : arg === 'off' ? false : !(await read($, isOn))
-    await update($, isOn, () => turnOn)
-    return { text: turnOn ? 'Metacognition on for this session.' : 'Metacognition off for this session.' }
+    await discuss($, arg)
+    return { text: 'Asked the metacognizer. Its answer will show in the band.' }
   })
 
   on('prompt.submit', async ($, e, next) => {

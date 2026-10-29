@@ -20,12 +20,12 @@ const MESSAGES: SessionMessage[] = [
 ]
 
 const run = (args: string) =>
-  ({ command: 'metacognition', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } }) as const
+  ({ command: 'meta', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } }) as const
 
 function engine(on: On) {
   const spawns: string[] = []
   on('session.start', (_, e) => ({ cwd: e.cwd }))
-  on('command.register', () => ({ value: { command: 'metacognition' } }))
+  on('command.register', () => ({ value: { command: 'meta' } }))
   on('agent.register', () => ({ value: { agent: 'metacognition:metacognizer' } }))
   on('tool.register', () => ({ value: { tool: 'mcp__metacognition__consult' } }))
   on('agent.spawn', (_, e) => {
@@ -98,3 +98,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 }
+
+test('/meta with a question asks the metacognizer from the prompt', async ($, on) => {
+  const { spawns } = engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  const answer = await $.command.run(run('is there a simpler way?'))
+  expect(answer.text).toMatch(/Asked the metacognizer/)
+  expect(spawns[0]).toMatch(/The person: is there a simpler way\?/)
+})
