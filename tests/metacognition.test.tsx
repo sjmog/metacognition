@@ -45,6 +45,7 @@ function engine(on: On) {
   on('session.cwd', () => ({ value: '/repo' }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.turns', () => ({ value: 0 }))
+  on('agent.list', () => ({ value: [] }))
   on('tool.call', () => ({ result: {} }))
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => ({ text: e.text }))

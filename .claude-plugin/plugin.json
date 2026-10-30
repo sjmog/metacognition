@@ -1,6 +1,6 @@
 {
   "name": "metacognition",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "A metacognizer above the prompt: a fresh agent that watches the session for a simpler, higher-level move it is missing",
   "types": "./types/index.d.ts",
   "userConfig": {

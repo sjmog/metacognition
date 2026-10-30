@@ -9,8 +9,8 @@ export type Line = {
   isSentToClaude?: true;
 };
 
-/** The metacognizer agent at work: a check of the session, a reply to the person, or the working agent consulting it. No agentId while it starts. */
-export type Run = { kind: "check" | "reply" | "consult"; agentId?: string };
+/** What a metacognizer agent was started for: a check of the session, a reply to the person, or the working agent consulting it. */
+export type RunKind = "check" | "reply" | "consult";
 
 declare module "claude-code" {
   interface PluginState {
@@ -22,9 +22,8 @@ declare module "claude-code" {
       callsSincePrompt: number;
       /** The person's prompts as typed, each once, where it last came: what a brief calls "what the person asked". */
       asks: string[];
-      running: Run | null;
-      /** Every metacognizer agent this session spawned, so their task notifications never reach the working agent. */
-      spawned: string[];
+      /** Every metacognizer agent this session started, by agent id: whether one is still at work is the engine's agent list's to say. */
+      runs: Record<string, RunKind>;
       checkedAt: number | null;
       /** Everything the metacognizer and the person have said this session; the metacognizer is given all of it. */
       thread: Line[];

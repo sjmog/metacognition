@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage, ToolUseSummary } from 'claude-code'
 
-import type { Line, Run } from '../types'
+import type { Line, RunKind } from '../types'
 
 const COMMAND = 'meta'
 const AGENT = 'metacognition:metacognizer'
@@ -13,8 +13,7 @@ const isOn = atom({ plugin: 'metacognition', key: 'isOn' } as const, true)
 const isWorking = atom({ plugin: 'metacognition', key: 'isWorking' } as const, false)
 const callsSincePrompt = atom({ plugin: 'metacognition', key: 'callsSincePrompt' } as const, 0)
 const asks = atom({ plugin: 'metacognition', key: 'asks' } as const, [])
-const running = atom({ plugin: 'metacognition', key: 'running' } as const, null)
-const spawned = atom({ plugin: 'metacognition', key: 'spawned' } as const, [])
+const runs = atom({ plugin: 'metacognition', key: 'runs' } as const, {})
 const checkedAt = atom({ plugin: 'metacognition', key: 'checkedAt' } as const, null)
 const thread = atom({ plugin: 'metacognition', key: 'thread' } as const, [])
 const shownFrom = atom({ plugin: 'metacognition', key: 'shownFrom' } as const, 0)
@@ -86,7 +85,7 @@ function point(answer: string): Line {
 }
 
 // Earlier points go to a check as their short notes only: their old evidence anchored later runs.
-function task(kind: Run['kind'], lines: Line[]) {
+function task(kind: RunKind, lines: Line[]) {
   if (kind === 'reply') return `## Your conversation with the person\n\n${transcript(lines)}\n\n${REPLY}`
   if (lines.length === 0) return CHECK
   const notes = lines.map(l => `${SPEAKER[l.from]}: ${l.text}`).join('\n\n')
@@ -102,26 +101,25 @@ const forClaude = (lines: Line[]) =>
 
 const say = ($: EngineInterface, line: Line) => update($, thread, lines => [...lines, line])
 
-async function start($: EngineInterface, kind: Run['kind'], question?: string) {
-  // update() may run its function more than once, so who won is read from its last run.
-  let isMine = false
-  await update($, running, run => {
-    isMine = run === null
-    return run ?? { kind }
-  })
-  if (!isMine) return false
+// Asked of the engine each time, never kept as a flag: a flag missed the agent's end across reloads and stuck.
+// `finished` is the agent whose end is being handled, still listed as running while its turn closes.
+async function isBusy($: EngineInterface, finished?: string) {
+  const agents = await $.agent.list()
+  return agents.some(a => a.type === AGENT && a.id !== finished && (a.status === 'pending' || a.status === 'running'))
+}
+
+async function start($: EngineInterface, kind: RunKind, question?: string, finished?: string) {
+  if (await isBusy($, finished)) return false
   const brief = session(await read($, asks), await $.session.messages(), await $.session.cwd(), await $.session.id(), await $.clock.now())
   const asked = question === undefined ? '' : `The working agent is consulting you and asks: ${question}\n\n`
   const prompt = `${brief}\n\n${asked}${task(kind, await read($, thread))}`
   const spawn = await $.agent.spawn({ subagentType: AGENT, prompt, description: `Metacognition ${kind}` })
   const agentId = spawn.agentId
   if (agentId === undefined) {
-    await update($, running, () => null)
     $.ui.toast(`Metacognition could not start: ${spawn.deny ?? 'no agent'}`)
     return false
   }
-  await update($, spawned, ids => [...ids, agentId])
-  await update($, running, () => ({ kind, agentId }))
+  await update($, runs, started => ({ ...started, [agentId]: kind }))
   return true
 }
 
@@ -133,8 +131,7 @@ async function deliver($: EngineInterface, text: string) {
   else await $.prompt.submit({ text })
 }
 
-async function finish($: EngineInterface, kind: Run['kind'], answer: string | null) {
-  await update($, running, () => null)
+async function finish($: EngineInterface, agentId: string, kind: RunKind, answer: string | null) {
   const text = answer?.trim() ?? ''
   if (kind !== 'reply' && answer !== null) {
     const now = await $.clock.now()
@@ -146,7 +143,7 @@ async function finish($: EngineInterface, kind: Run['kind'], answer: string | nu
   if (kind === 'consult' && text.startsWith(AGREE))
     await append($, 'The metacognizer found no higher-level move. That is not a review of your design or your numbers; weigh those yourself.')
   else if (kind === 'consult' && text !== '') await deliver($, `The metacognizer answered your consult:\n\n${text}`)
-  if ((await read($, thread)).at(-1)?.from === 'you') await start($, 'reply')
+  if ((await read($, thread)).at(-1)?.from === 'you') await start($, 'reply', undefined, agentId)
 }
 
 async function discuss($: EngineInterface, text: string) {
@@ -217,7 +214,7 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
-      const ids = await read($, spawned)
+      const ids = Object.keys(await read($, runs))
       if (ids.some(id => e.text.includes(id))) return { drop: 'a metacognition agent finished; its answer is in the band' }
     }
     if (e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'scheduled-trigger') {
@@ -247,10 +244,10 @@ export const register: Register = (on, options) => {
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId === undefined) await update($, isWorking, () => false)
-    const run = await read($, running)
-    if (run === null || run.agentId === undefined || e.agentId !== run.agentId) return result
-    if (e.reason !== 'answer') $.ui.toast(`Metacognition ${run.kind} ended: ${e.reason}`)
-    await finish($, run.kind, e.reason === 'answer' ? e.answer : null)
+    const kind = e.agentId === undefined ? undefined : (await read($, runs))[e.agentId]
+    if (e.agentId === undefined || kind === undefined) return result
+    if (e.reason !== 'answer') $.ui.toast(`Metacognition ${kind} ended: ${e.reason}`)
+    await finish($, e.agentId, kind, e.reason === 'answer' ? e.answer : null)
     return result
   })
 
@@ -260,7 +257,9 @@ export const register: Register = (on, options) => {
     const { Box, Text, Button, Input, Markdown } = $.ui.resolve(e)
     const all = await read($, thread)
     const lines = all.slice(await read($, shownFrom))
-    const thinking = (await read($, running)) !== null
+    // Read so a started run redraws the band.
+    await read($, runs)
+    const thinking = await isBusy($)
     const at = await read($, checkedAt)
     // Read so each turn's start and end redraws the band; the tip shows at startup and every tenth prompt.
     await read($, isWorking)
