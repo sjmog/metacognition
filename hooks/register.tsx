@@ -157,7 +157,8 @@ async function discuss($: EngineInterface, text: string) {
 
 const checkSoon = ($: EngineInterface) => $.clock.after(0, () => void start($, 'check'))
 
-export const register: Register = on => {
+export const register: Register = (on, options) => {
+  const { model, effort } = options
   on('session.start', async ($, e, next) => {
     await $.tool.register({
       name: 'consult',
@@ -175,6 +176,8 @@ export const register: Register = on => {
       description: 'Watches a session from above for a higher-level move it is missing. Started by the metacognition mod only.',
       prompt: SYSTEM,
       tools: ['Read', 'Bash'],
+      model: model === 'session' ? 'inherit' : String(model),
+      ...(effort === 'session' ? {} : { effort: String(effort) }),
     })
     await $.command.register({
       name: COMMAND,

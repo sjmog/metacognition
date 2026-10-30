@@ -33,4 +33,6 @@ Ask it anything from the prompt with `/meta <question>`; the answer shows in the
 - When the working agent consults it through its `consult` tool: every so often during substantial work, and before another eval round, a PR stack, or when you push back. The answer goes back to the agent, and the short note goes in the band.
 - When you run `/meta now`.
 
+The metacognizer runs on the session's own model and effort. To change either, open `/config` and set **Metacognizer model** (fable, opus, sonnet, haiku) or **Metacognizer effort** (low to max).
+
 Each check is a full agent that reads code, so it costs tokens. Turn it off for a session with `/meta off`, and back on with `/meta on`.

@@ -29,9 +29,13 @@ const run = (args: string) =>
 
 function engine(on: On) {
   const spawns: string[] = []
+  const defined: unknown[] = []
   on('session.start', (_, e) => ({ cwd: e.cwd }))
   on('command.register', () => ({ value: { command: 'meta' } }))
-  on('agent.register', () => ({ value: { agent: 'metacognition:metacognizer' } }))
+  on('agent.register', (_, e) => {
+    defined.push(e)
+    return { value: { agent: 'metacognition:metacognizer' } }
+  })
   on('tool.register', () => ({ value: { tool: 'mcp__metacognition__consult' } }))
   on('agent.spawn', (_, e) => {
     spawns.push(e.prompt)
@@ -48,7 +52,7 @@ function engine(on: On) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { clock: mock.clock(on), spawns }
+  return { clock: mock.clock(on), spawns, defined }
 }
 
 test('the tenth main-loop call after a prompt starts one check', async ($, on) => {
@@ -133,4 +137,17 @@ test('/meta with a question asks the metacognizer from the prompt', async ($, on
   const answer = await $.command.run(run('is there a simpler way?'))
   expect(answer.text).toMatch(/Asked the metacognizer/)
   expect(spawns[0]).toMatch(/The person: is there a simpler way\?/)
+})
+
+test('the model and effort settings reach the metacognizer', { options: { model: 'fable', effort: 'max' } }, async ($, on) => {
+  const { defined } = engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(defined[0]).toMatchObject({ model: 'fable', effort: 'max' })
+})
+
+test("by default the metacognizer follows the session's model and effort", async ($, on) => {
+  const { defined } = engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  expect(defined[0]).toMatchObject({ model: 'inherit' })
+  expect(defined[0]).not.toHaveProperty('effort')
 })
