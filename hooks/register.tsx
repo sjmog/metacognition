@@ -1,7 +1,7 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage, ToolUseSummary } from 'claude-code'
 
-import type { Line, RunKind } from '../types'
+import type { Line, Run, RunKind } from '../types'
 
 const COMMAND = 'meta'
 const AGENT = 'metacognition:metacognizer'
@@ -12,8 +12,10 @@ const CHECK_AFTER_CALLS = 10
 const isOn = atom({ plugin: 'metacognition', key: 'isOn' } as const, true)
 const isWorking = atom({ plugin: 'metacognition', key: 'isWorking' } as const, false)
 const callsSincePrompt = atom({ plugin: 'metacognition', key: 'callsSincePrompt' } as const, 0)
+// Where the person's own prompts come from: typed, from a phone, a /loop round, or a host such as the desktop app.
+const PERSON = ['composer', 'bridge', 'scheduled-trigger', 'sdk']
 const asks = atom({ plugin: 'metacognition', key: 'asks' } as const, [])
-const runs = atom({ plugin: 'metacognition', key: 'runs' } as const, {})
+const started = atom({ plugin: 'metacognition', key: 'started' } as const, {})
 const checkedAt = atom({ plugin: 'metacognition', key: 'checkedAt' } as const, null)
 const thread = atom({ plugin: 'metacognition', key: 'thread' } as const, [])
 const shownFrom = atom({ plugin: 'metacognition', key: 'shownFrom' } as const, 0)
@@ -110,7 +112,8 @@ async function isBusy($: EngineInterface, finished?: string) {
 
 async function start($: EngineInterface, kind: RunKind, question?: string, finished?: string) {
   if (await isBusy($, finished)) return false
-  const brief = session(await read($, asks), await $.session.messages(), await $.session.cwd(), await $.session.id(), await $.clock.now())
+  const messages = await $.session.messages()
+  const brief = session(await read($, asks), messages, await $.session.cwd(), await $.session.id(), await $.clock.now())
   const asked = question === undefined ? '' : `The working agent is consulting you and asks: ${question}\n\n`
   const prompt = `${brief}\n\n${asked}${task(kind, await read($, thread))}`
   const spawn = await $.agent.spawn({ subagentType: AGENT, prompt, description: `Metacognition ${kind}` })
@@ -119,8 +122,38 @@ async function start($: EngineInterface, kind: RunKind, question?: string, finis
     $.ui.toast(`Metacognition could not start: ${spawn.deny ?? 'no agent'}`)
     return false
   }
-  await update($, runs, started => ({ ...started, [agentId]: kind }))
+  await update($, started, runs => ({ ...runs, [agentId]: { kind, seen: messages.length } }))
   return true
+}
+
+// Tested on real-shaped cases: the engine's classifier called every note overtaken; this question got all six right, three runs each.
+const STALE = (note: string, since: string) => `A note was raised about a coding session, then the working agent kept going.
+
+The note:
+${note}
+
+What the working agent said and did after the note was raised:
+${since}
+
+Is the note stale now? It is stale if, since the note, the agent did what it recommends, explicitly decided against it, finished the work it is about, or the session has moved on to different work. It is current if the agent is still on the work the note is about and has not taken the note up, including when it carries on with the very approach the note argues against.
+
+Answer with exactly one word: STALE or CURRENT.`
+
+// What the working agent said and did in the given messages, latest last.
+const activity = (messages: SessionMessage[]) =>
+  messages
+    .flatMap(m => (m.role === 'assistant' ? [m.text.trim(), ...m.toolUses.map(call)] : []))
+    .filter(text => text !== '')
+    .join('\n')
+    .slice(-6000)
+
+// A check takes a minute or two and a note can stand for hours; the working agent keeps going meanwhile.
+// A small fast model judges whether what it did after `seen` has overtaken the note. No clear answer, the note stays.
+async function isOvertaken($: EngineInterface, note: string, seen: number) {
+  const since = activity((await $.session.messages()).slice(seen))
+  if (since === '') return false
+  const answer = await $.model.complete({ model: 'haiku', prompt: STALE(note, since), maxTokens: 20 })
+  return answer.isAnswered && /STALE/.test(answer.text)
 }
 
 const append = ($: EngineInterface, text: string) => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
@@ -131,14 +164,18 @@ async function deliver($: EngineInterface, text: string) {
   else await $.prompt.submit({ text })
 }
 
-async function finish($: EngineInterface, agentId: string, kind: RunKind, answer: string | null) {
+async function finish($: EngineInterface, agentId: string, { kind, seen }: Run, answer: string | null) {
   const text = answer?.trim() ?? ''
   if (kind !== 'reply' && answer !== null) {
     const now = await $.clock.now()
     await update($, checkedAt, () => now)
   }
-  if (text !== '' && !(kind !== 'reply' && text.startsWith(AGREE)))
-    await say($, kind === 'consult' ? { ...point(text), isSentToClaude: true } : point(text))
+  const note = point(text)
+  const isPoint = text !== '' && !(kind !== 'reply' && text.startsWith(AGREE))
+  if (isPoint && !(kind === 'check' && (await isOvertaken($, note.text, seen)))) {
+    const shownAt = (await $.session.messages()).length
+    await say($, kind === 'consult' ? { ...note, isSentToClaude: true, seen: shownAt } : kind === 'check' ? { ...note, seen: shownAt } : note)
+  }
   // A bare AGREE read as an endorsement of the agent's design, and woke an idle agent for one word.
   if (kind === 'consult' && text.startsWith(AGREE))
     await append($, 'The metacognizer found no higher-level move. That is not a review of your design or your numbers; weigh those yourself.')
@@ -214,10 +251,10 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     if (e.origin.kind === 'task-notification') {
-      const ids = Object.keys(await read($, runs))
+      const ids = Object.keys(await read($, started))
       if (ids.some(id => e.text.includes(id))) return { drop: 'a metacognition agent finished; its answer is in the band' }
     }
-    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'scheduled-trigger') {
+    if (PERSON.includes(e.origin.kind)) {
       await update($, callsSincePrompt, () => 0)
       // A bare command (/effort, /reload-plugins) asks nothing; Tell Claude's text is the mod's own thread.
       const isAsk = !(e.command !== undefined && e.command.args.trim() === '') && !e.text.startsWith(FOR_CLAUDE)
@@ -243,11 +280,20 @@ export const register: Register = (on, options) => {
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId === undefined) await update($, isWorking, () => false)
-    const kind = e.agentId === undefined ? undefined : (await read($, runs))[e.agentId]
-    if (e.agentId === undefined || kind === undefined) return result
-    if (e.reason !== 'answer') $.ui.toast(`Metacognition ${kind} ended: ${e.reason}`)
-    await finish($, e.agentId, kind, e.reason === 'answer' ? e.answer : null)
+    if (e.agentId === undefined) {
+      await update($, isWorking, () => false)
+      // A note the person hasn't taken up comes down once the work has moved past it.
+      const all = await read($, thread)
+      const shown = all.slice(await read($, shownFrom))
+      const note = shown.at(-1)
+      const isUntouched = !shown.some(l => l.from === 'you')
+      if (note?.seen !== undefined && isUntouched && (await isOvertaken($, note.text, note.seen))) await update($, shownFrom, () => all.length)
+      return result
+    }
+    const run = (await read($, started))[e.agentId]
+    if (run === undefined) return result
+    if (e.reason !== 'answer') $.ui.toast(`Metacognition ${run.kind} ended: ${e.reason}`)
+    await finish($, e.agentId, run, e.reason === 'answer' ? e.answer : null)
     return result
   })
 
@@ -258,7 +304,7 @@ export const register: Register = (on, options) => {
     const all = await read($, thread)
     const lines = all.slice(await read($, shownFrom))
     // Read so a started run redraws the band.
-    await read($, runs)
+    await read($, started)
     const thinking = await isBusy($)
     const at = await read($, checkedAt)
     // Read so each turn's start and end redraws the band; the tip shows at startup and every tenth prompt.
