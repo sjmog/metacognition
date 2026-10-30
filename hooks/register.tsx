@@ -296,7 +296,14 @@ export const register: Register = on => {
         )}
         <Box flexDirection="row" columnGap={2}>
           <Input key="reply" autoFocus placeholder="click here to reply, or type /meta <your reply>" submitLabel="send" onSubmit={text => void discuss($, text)} />
-          <Button key="tell" label="Tell Claude" onPress={() => void $.prompt.fill({ text: forClaude(lines), mode: 'insert' })} />
+          <Button
+            key="tell"
+            label="Tell Claude"
+            onPress={async () => {
+              await $.prompt.fill({ text: forClaude(lines), mode: 'insert' })
+              await update($, shownFrom, () => all.length)
+            }}
+          />
           <Button key="dismiss" label="Dismiss" onPress={() => void update($, shownFrom, () => all.length)} />
         </Box>
       </Box>

@@ -23,7 +23,7 @@ In the desktop app: click + next to the prompt box, then Plugins, Add marketplac
 A framed band above the prompt.
 
 - Cyan, one line: `◇ Metacognition agrees · 14:52`. Nothing to say.
-- Yellow: a short note in plain words saying what to do instead. Reply in the box to discuss it, press **Tell Claude** to hand the discussion and the metacognizer's fuller reasoning to the working agent, or **Dismiss** (it won't raise that point again).
+- Yellow: a short note in plain words saying what to do instead. Reply in the box to discuss it, press **Tell Claude** to hand the discussion and the metacognizer's fuller reasoning to the working agent (the band then clears), or **Dismiss** (it won't raise that point again).
 
 Ask it anything from the prompt with `/meta <question>`; the answer shows in the band. To use the band's own buttons, `ctrl+x tab` moves into it, `Tab` walks its buttons, and `Esc` returns to the prompt.
 
