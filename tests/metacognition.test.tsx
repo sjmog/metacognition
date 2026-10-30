@@ -19,6 +19,11 @@ const MESSAGES: SessionMessage[] = [
   { role: 'assistant', text: 'I will write a new CSV exporter.', toolUses: [{ tool_use_id: 't1', tool: 'Edit', input: { file_path: 'export.ts' } }] },
 ]
 
+const calls = async (call: () => Promise<unknown>, n: number) => {
+  for (let i = 0; i < n; i++) await call()
+}
+const read = () => ({ tool: 'Read', file_path: 'a.ts' }) as const
+
 const run = (args: string) =>
   ({ command: 'meta', args, origin: { kind: 'composer' }, presentation: { isFullscreen: true, columns: 200 } }) as const
 
@@ -34,9 +39,11 @@ function engine(on: On) {
   })
   on('session.messages', () => ({ value: MESSAGES }))
   on('session.cwd', () => ({ value: '/repo' }))
+  on('session.id', () => ({ value: 'session-1' }))
   on('session.turns', () => ({ value: 0 }))
   on('tool.call', () => ({ result: {} }))
   on('ui.toast', () => ({ value: undefined }))
+  on('prompt.submit', (_, e) => ({ text: e.text }))
   on('ui.render', ($, e) => {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
@@ -44,27 +51,47 @@ function engine(on: On) {
   return { clock: mock.clock(on), spawns }
 }
 
-test("the first edit after a prompt starts a fresh check that sees the person's words", async ($, on) => {
+test('the tenth main-loop call after a prompt starts one check', async ($, on) => {
   const { clock, spawns } = engine(on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await $.tool.call({ tool: 'Read', file_path: 'a.ts' })
+  await calls(() => $.tool.call(read()), 9)
   await clock.settle()
   expect(spawns.length).toBe(0)
 
-  await $.tool.call({ tool: 'Edit', file_path: 'export.ts', old_string: 'a', new_string: 'b' })
+  await $.tool.call(read())
   await clock.settle()
   expect(spawns.length).toBe(1)
-  expect(spawns[0]).toMatch(/What the person asked[\s\S]*Export the notes as CSV[\s\S]*Edit export.ts/)
 
-  await $.tool.call({ tool: 'Edit', file_path: 'export.ts', old_string: 'b', new_string: 'c' })
+  await calls(() => $.tool.call(read()), 15)
   await clock.settle()
   expect(spawns.length).toBe(1)
 })
 
-test('a burst of parallel edits starts one check', async ($, on) => {
+test("the brief lists the person's own asks once each, and leaves out bare commands and the mod's own messages", async ($, on) => {
   const { clock, spawns } = engine(on)
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
-  await Promise.all(Array.from({ length: 5 }, () => $.tool.call({ tool: 'Edit', file_path: 'a.ts', old_string: 'a', new_string: 'b' })))
+  const loop = '/loop make the export match the old CSV byte for byte'
+  const asLoop = { name: 'loop', args: 'make the export match the old CSV byte for byte' }
+  await $.prompt.submit({ text: loop, command: asLoop, origin: { kind: 'composer' }, wait: false })
+  await $.prompt.submit({ text: '/reload-plugins', command: { name: 'reload-plugins', args: '' }, origin: { kind: 'composer' }, wait: false })
+  await $.prompt.submit({ text: 'Keep the header row.', origin: { kind: 'composer' }, wait: false })
+  await $.prompt.submit({ text: loop, command: asLoop, origin: { kind: 'scheduled-trigger' }, wait: false })
+  await $.prompt.submit({ text: 'The metacognizer answered your consult:\n\nUse the old exporter.', origin: { kind: 'plugin', name: 'metacognition' }, wait: false })
+  await $.prompt.submit({ text: 'The metacognizer (a fresh agent watching this session for a higher-level move) and I discussed this: …', origin: { kind: 'composer' }, wait: false })
+  await $.command.run(run('now'))
+  await clock.settle()
+
+  const asked = (spawns[0] ?? '').split('## What the working agent')[0] ?? ''
+  expect(asked.match(/byte for byte/g)?.length).toBe(1)
+  expect(asked.indexOf('Keep the header row.')).toBeLessThan(asked.indexOf('byte for byte'))
+  expect(asked).not.toMatch(/reload-plugins|old exporter|discussed this/)
+  expect(spawns[0]).toMatch(/~\/\.claude\/projects\/\*\/session-1\.jsonl/)
+})
+
+test('a burst of parallel calls starts one check', async ($, on) => {
+  const { clock, spawns } = engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await Promise.all(Array.from({ length: 25 }, () => $.tool.call(read())))
   await clock.settle()
   expect(spawns.length).toBe(1)
 })

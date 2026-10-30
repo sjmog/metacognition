@@ -7,11 +7,12 @@ const COMMAND = 'meta'
 const AGENT = 'metacognition:metacognizer'
 const TOOL = 'mcp__metacognition__consult'
 const TIP_EVERY_PROMPTS = 10
-const EDIT_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit']
+const CHECK_AFTER_CALLS = 10
 
 const isOn = atom({ plugin: 'metacognition', key: 'isOn' } as const, true)
 const isWorking = atom({ plugin: 'metacognition', key: 'isWorking' } as const, false)
-const checkedSincePrompt = atom({ plugin: 'metacognition', key: 'checkedSincePrompt' } as const, false)
+const callsSincePrompt = atom({ plugin: 'metacognition', key: 'callsSincePrompt' } as const, 0)
+const asks = atom({ plugin: 'metacognition', key: 'asks' } as const, [])
 const running = atom({ plugin: 'metacognition', key: 'running' } as const, null)
 const spawned = atom({ plugin: 'metacognition', key: 'spawned' } as const, [])
 const checkedAt = atom({ plugin: 'metacognition', key: 'checkedAt' } as const, null)
@@ -30,9 +31,13 @@ const CHECK = `Start from the person's own words, not the working agent's restat
 
 Before judging the current approach, list for yourself two or three other ways to get that outcome, at different levels: something that already exists, a different layer or owner, a change to data or config instead of code, deleting instead of adding, not doing it at all, or a different outcome that would serve them better. Check the promising ones against the code. Then compare them with the whole path the session is on, including the signs of working at the wrong level: a diff far bigger than the idea behind it, special cases piling up, the same thing fixed again and again, fighting the tools, guards and checks multiplying.
 
+Then check the yardstick: what the session measures, tests against or will call done. Is that what the person cares about? A gold set the person never judged, a merged change with no check that the real number moved, or a monitor watching the wrong signal all mean the outcome is framed wrong.
+
+Before you claim something is unexplained, unplanned or not yet tried, grep the session's transcript for it. A bug or gap the working agent has already reported is not a new move.
+
 If the session's direction is already the simple, high-level one, or you would not bet that your point changes what the person does, your final message is exactly: ${AGREE}
 
-Otherwise your final message opens with what the person will read: at most three short sentences and under 50 words, in words someone outside the code would follow, saying what to do instead and why it is simpler. Start straight in with the point itself: no heading, label, numbering, jargon, code names, lists or file paths.
+Otherwise your final message opens with what the person will read: at most three short sentences and under 50 words, in words someone outside the code would follow, addressed to the person as you, saying what to do instead and why it is simpler. Start straight in with the point itself: no heading, label, numbering, jargon, code names, lists or file paths.
 After that, a line holding only ---, and below it, for the working agent: your fuller reasoning, the evidence you found (files, commands, what they showed) and the first cheap step that would confirm the move.
 
 For example:
@@ -42,25 +47,18 @@ Measure where the time goes before adding parallel searches. A one-line change m
 
 const REPLY = `The person is talking to you, not to the agent doing the work. Reply to their last message as the metacognizer in two or three short sentences of very plain words. Look at the code if it helps you answer.`
 
-const stripped = (text: string) =>
-  text
-    .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
-    .replace(/<task-notification>[\s\S]*?<\/task-notification>/g, '')
-    .trim()
-
+// A Workflow's input has none of the usual fields; its script opens with its name and description.
 const call = (use: ToolUseSummary) => {
   const { file_path, command, pattern, description } = use.input
-  const what = String(file_path ?? command ?? pattern ?? description ?? '').replace(/\s+/g, ' ')
+  const what = String(file_path ?? command ?? pattern ?? description ?? JSON.stringify(use.input)).replace(/\s+/g, ' ')
   return `- ${use.tool} ${what.slice(0, 120)}`
 }
 
+const clipped = (text: string, n: number) => (text.length <= n ? text : `${text.slice(0, n / 2)}\n…\n${text.slice(-n / 2)}`)
+
 // What was asked and what was done, but little of the session's reasoning,
 // so the metacognizer isn't pulled down the same funnel.
-function session(messages: SessionMessage[], cwd: string) {
-  const asks = messages
-    .filter(m => m.role === 'user' && (m.toolResults ?? []).length === 0)
-    .map(m => stripped(m.text).slice(0, 4000))
-    .filter(text => text !== '')
+function session(asked: string[], messages: SessionMessage[], cwd: string, id: string, now: number) {
   const said = messages
     .filter(m => m.role === 'assistant' && m.text.trim() !== '')
     .map(m => m.text.trim())
@@ -68,10 +66,10 @@ function session(messages: SessionMessage[], cwd: string) {
     .slice(-6000)
   const calls = messages.flatMap(m => m.toolUses).slice(-40).map(call)
   return [
-    `## What the person asked, in order\n\n${asks.join('\n\n---\n\n')}`,
+    `## What the person asked, in order\n\n${asked.map(text => clipped(text, 6000)).join('\n\n---\n\n')}`,
     `## What the working agent says it is doing (its own words, latest last; it may be heading the wrong way)\n\n${said}`,
     `## Its latest tool calls\n\n${calls.join('\n')}`,
-    `Working directory: ${cwd}. Run git status and git diff there to see the change so far.`,
+    `Now: ${new Date(now).toISOString()}. Working directory: ${cwd}; the tool calls above show which directories and files the work touched, so look there for the change. The session's full transcript, with timestamps and anything asked before this list began, is ~/.claude/projects/*/${id}.jsonl.`,
   ].join('\n\n')
 }
 
@@ -87,16 +85,20 @@ function point(answer: string): Line {
   return { from: 'metacognizer', text: text.trim(), ...(detail === '' ? {} : { detail }) }
 }
 
+// Earlier points go to a check as their short notes only: their old evidence anchored later runs.
 function task(kind: Run['kind'], lines: Line[]) {
   if (kind === 'reply') return `## Your conversation with the person\n\n${transcript(lines)}\n\n${REPLY}`
   if (lines.length === 0) return CHECK
-  return `## What you have already raised, and the person's replies\n\n${transcript(lines)}\n\nThe person has seen all of these. Never raise any of them, or a variant of them, again: raise only a move that is new.\n\n${CHECK}`
+  const notes = lines.map(l => `${SPEAKER[l.from]}: ${l.text}`).join('\n\n')
+  return `## What you have already raised, and the replies\n\n${notes}\n\nDon't repeat a point the person dismissed or the working agent tested and answered. You may come back to a point it took up only in part. If the session is now building a move you proposed, check what that move shifts load or risk onto before you agree.\n\n${CHECK}`
 }
 
-const CONSULT = `Consult the metacognizer: a fresh agent that reads this session (the person's own words, what you have done, the diff so far) and looks for a higher-level move you are missing, one that would make much of the current approach unnecessary or show the outcome is framed wrong. It answers ${AGREE}, or with the move, its reasoning and a cheap step to confirm it. It works in the background: its answer is added to this conversation a minute or two later, so carry on meanwhile. Call it every so often during substantial work: roughly every 10 to 20 turns, judged by where you are. Call it sooner when you are about to commit to an approach, when a change is growing far bigger than the idea behind it, or when you have fixed the same thing twice; later during routine steps. Weigh what it says: if it holds, change course; if not, say why in a line.`
+const CONSULT = `Consult the metacognizer: a fresh agent that reads this session (the person's own words, what you have done, the diff so far) and looks for a higher-level move you are missing, one that would make much of the current approach unnecessary or show the outcome is framed wrong. It answers ${AGREE}, or with the move, its reasoning and a cheap step to confirm it. It works in the background: its answer is added to this conversation a minute or two later, so carry on meanwhile. Call it every so often during substantial work, roughly every 10 to 20 turns judged by where you are, and especially: before you launch another eval round, workflow or batch of subagents; before you open a PR or a stack; when a change is growing far bigger than the idea behind it; when you have fixed the same thing twice; and when the person pushes back on your direction. Not for routine steps. Weigh what it says: if it holds, change course; if not, say why in a line.`
+
+const FOR_CLAUDE = 'The metacognizer (a fresh agent watching this session for a higher-level move) and I discussed this:'
 
 const forClaude = (lines: Line[]) =>
-  `The metacognizer (a fresh agent watching this session for a higher-level move) and I discussed this:\n\n${transcript(lines)}\n\nRun the cheap check it names before deciding. If it holds, change course; if not, say why in a line.`
+  `${FOR_CLAUDE}\n\n${transcript(lines)}\n\nRun the cheap check it names before deciding. If it holds, change course; if not, say why in a line.`
 
 const say = ($: EngineInterface, line: Line) => update($, thread, lines => [...lines, line])
 
@@ -108,7 +110,7 @@ async function start($: EngineInterface, kind: Run['kind'], question?: string) {
     return run ?? { kind }
   })
   if (!isMine) return false
-  const brief = session(await $.session.messages(), await $.session.cwd())
+  const brief = session(await read($, asks), await $.session.messages(), await $.session.cwd(), await $.session.id(), await $.clock.now())
   const asked = question === undefined ? '' : `The working agent is consulting you and asks: ${question}\n\n`
   const prompt = `${brief}\n\n${asked}${task(kind, await read($, thread))}`
   const spawn = await $.agent.spawn({ subagentType: AGENT, prompt, description: `Metacognition ${kind}` })
@@ -123,9 +125,11 @@ async function start($: EngineInterface, kind: Run['kind'], question?: string) {
   return true
 }
 
+const append = ($: EngineInterface, text: string) => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+
 // Mid-turn the working agent reads an appended row at its next step; idle, only a prompt reaches it.
 async function deliver($: EngineInterface, text: string) {
-  if (await read($, isWorking)) await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+  if (await read($, isWorking)) await append($, text)
   else await $.prompt.submit({ text })
 }
 
@@ -138,7 +142,10 @@ async function finish($: EngineInterface, kind: Run['kind'], answer: string | nu
   }
   if (text !== '' && !(kind !== 'reply' && text.startsWith(AGREE)))
     await say($, kind === 'consult' ? { ...point(text), isSentToClaude: true } : point(text))
-  if (kind === 'consult' && text !== '') await deliver($, `The metacognizer answered your consult:\n\n${text}`)
+  // A bare AGREE read as an endorsement of the agent's design, and woke an idle agent for one word.
+  if (kind === 'consult' && text.startsWith(AGREE))
+    await append($, 'The metacognizer found no higher-level move. That is not a review of your design or your numbers; weigh those yourself.')
+  else if (kind === 'consult' && text !== '') await deliver($, `The metacognizer answered your consult:\n\n${text}`)
   if ((await read($, thread)).at(-1)?.from === 'you') await start($, 'reply')
 }
 
@@ -210,21 +217,22 @@ export const register: Register = on => {
       const ids = await read($, spawned)
       if (ids.some(id => e.text.includes(id))) return { drop: 'a metacognition agent finished; its answer is in the band' }
     }
-    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge') await update($, checkedSincePrompt, () => false)
+    if (e.origin.kind === 'composer' || e.origin.kind === 'bridge' || e.origin.kind === 'scheduled-trigger') {
+      await update($, callsSincePrompt, () => 0)
+      // A bare command (/effort, /reload-plugins) asks nothing; Tell Claude's text is the mod's own thread.
+      const isAsk = !(e.command !== undefined && e.command.args.trim() === '') && !e.text.startsWith(FOR_CLAUDE)
+      if (isAsk) await update($, asks, list => [...list.filter(text => text !== e.text), e.text])
+    }
     return next(e)
   })
 
-  // The main loop's first edit after a prompt is when the plan is set but still cheap to change.
-  // Subagents' edits don't count: they work inside a direction the main loop chose.
+  // Ten main-loop calls after a prompt the agent has usually chosen a direction, and is still cheap to turn,
+  // whether it then edits (often through Bash), delegates or investigates. Subagents' calls don't count:
+  // they work inside a direction the main loop chose. update() resolves what it wrote, so one call sees 10.
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined || !EDIT_TOOLS.includes(String(e.tool)) || !(await read($, isOn))) return result
-    let isFirstEdit = false
-    await update($, checkedSincePrompt, checked => {
-      isFirstEdit = !checked
-      return true
-    })
-    if (isFirstEdit) checkSoon($)
+    if (e.agentId !== undefined || !(await read($, isOn))) return result
+    if ((await update($, callsSincePrompt, n => n + 1)) === CHECK_AFTER_CALLS) checkSoon($)
     return result
   })
 

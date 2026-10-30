@@ -18,8 +18,10 @@ declare module "claude-code" {
       isOn: boolean;
       /** Whether the main loop is mid-turn, so a consult's answer is appended to the turn rather than starting one. */
       isWorking: boolean;
-      /** Whether a check has started since the person's last prompt; the first edit after a prompt starts one if not. */
-      checkedSincePrompt: boolean;
+      /** Main-loop tool calls since the person's last prompt (or /loop round); the tenth starts a check. */
+      callsSincePrompt: number;
+      /** The person's prompts as typed, each once, where it last came: what a brief calls "what the person asked". */
+      asks: string[];
       running: Run | null;
       /** Every metacognizer agent this session spawned, so their task notifications never reach the working agent. */
       spawned: string[];

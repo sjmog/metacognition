@@ -29,8 +29,8 @@ Ask it anything from the prompt with `/meta <question>`; the answer shows in the
 
 ## When it runs
 
-- By itself at the working agent's first file edit after each of your prompts, when the plan is set but still cheap to change.
-- When the working agent consults it through its `consult` tool, every so often during substantial work. The answer goes back to the agent, and the short note goes in the band.
+- By itself at the working agent's tenth tool call after each of your prompts (each `/loop` round counts as a prompt), when it has usually chosen a direction that is still cheap to change.
+- When the working agent consults it through its `consult` tool: every so often during substantial work, and before another eval round, a PR stack, or when you push back. The answer goes back to the agent, and the short note goes in the band.
 - When you run `/meta now`.
 
 Each check is a full agent that reads code, so it costs tokens. Turn it off for a session with `/meta off`, and back on with `/meta on`.
