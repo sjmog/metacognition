@@ -46,6 +46,13 @@ function engine(on: On) {
   on('session.id', () => ({ value: 'session-1' }))
   on('session.turns', () => ({ value: 0 }))
   on('agent.list', () => ({ value: [] }))
+  const manifest = { version: '0.7.0' }
+  on('fs.read', () => ({ value: JSON.stringify(manifest) }))
+  const commands: string[] = []
+  on('command.run', (_, e) => {
+    commands.push(e.command)
+    return { text: '' }
+  })
   on('tool.call', () => ({ result: {} }))
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
@@ -53,7 +60,7 @@ function engine(on: On) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { clock: mock.clock(on), spawns, defined }
+  return { clock: mock.clock(on), spawns, defined, manifest, commands }
 }
 
 test('the tenth main-loop call after a prompt starts one check', async ($, on) => {
@@ -151,4 +158,18 @@ test("by default the metacognizer follows the session's model and effort", async
   await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
   expect(defined[0]).toMatchObject({ model: 'inherit' })
   expect(defined[0]).not.toHaveProperty('effort')
+})
+
+test('a newer version in the folder reloads the session, and the same version does not', async ($, on) => {
+  const { clock, manifest, commands } = engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await clock.advance(5 * 60 * 1000)
+  expect(commands).not.toContain('reload-plugins')
+
+  manifest.version = '0.7.1'
+  await clock.advance(5 * 60 * 1000)
+  expect(commands).toContain('reload-plugins')
+
+  await clock.advance(30 * 60 * 1000)
+  expect(commands.filter(c => c === 'reload-plugins').length).toBe(1)
 })

@@ -7,6 +7,7 @@ const COMMAND = 'meta'
 const AGENT = 'metacognition:metacognizer'
 const TOOL = 'mcp__metacognition__consult'
 const TIP_EVERY_PROMPTS = 10
+const RELOAD_CHECK_MS = 5 * 60 * 1000
 const CHECK_AFTER_CALLS = 10
 
 const isOn = atom({ plugin: 'metacognition', key: 'isOn' } as const, true)
@@ -100,6 +101,8 @@ const FOR_CLAUDE = 'The metacognizer (a fresh agent watching this session for a 
 
 const forClaude = (lines: Line[]) =>
   `${FOR_CLAUDE}\n\n${transcript(lines)}\n\nRun the cheap check it names before deciding. If it holds, change course; if not, say why in a line.`
+
+const version = async ($: EngineInterface) => String(JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)).version)
 
 const say = ($: EngineInterface, line: Line) => update($, thread, lines => [...lines, line])
 
@@ -220,6 +223,15 @@ export const register: Register = (on, options) => {
       argumentHint: '[question|on|off|now]',
       immediate: true,
     })
+    // A running session keeps the code it loaded. When a newer version lands in the plugin's folder,
+    // reload once the session is idle, so a release reaches every session without a manual /reload-plugins.
+    const loaded = await version($)
+    const timer = $.clock.every(RELOAD_CHECK_MS, () => void (async () => {
+      if ((await version($)) === loaded) return
+      // The command waits for the session to go idle; queue it once, not once per check of a long turn.
+      timer.cancel()
+      await $.command.run({ command: 'reload-plugins' })
+    })())
     return next(e)
   })
 
