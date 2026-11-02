@@ -126,7 +126,8 @@ async function start($: EngineInterface, kind: RunKind, question?: string, finis
   return true
 }
 
-// Tested on real-shaped cases: the engine's classifier called every note overtaken; this question got all six right, three runs each.
+// Tested on real cases, three runs each: the engine's classifier called every note overtaken, and an earlier
+// wording kept a note whose condition a later result had settled. This wording got all 14 right.
 const STALE = (note: string, since: string) => `A note was raised about a coding session, then the working agent kept going.
 
 The note:
@@ -135,7 +136,7 @@ ${note}
 What the working agent said and did after the note was raised:
 ${since}
 
-Is the note stale now? It is stale if, since the note, the agent did what it recommends, explicitly decided against it, finished the work it is about, or the session has moved on to different work. It is current if the agent is still on the work the note is about and has not taken the note up, including when it carries on with the very approach the note argues against.
+Is the note stale now? It is stale if anything since the note has overtaken it: the agent did what it recommends or explicitly decided against it; a result came in that answers the note's question or settles the condition it depends on; something the note assumes turned out untrue or already done; the work it is about finished, including when the work it wanted to change or head off has already shipped and the agent has gone on to the next thing; or the session moved on to different work. It is current only if its point is still open: the agent is still on that work, nothing since settles it, and the agent has not taken it up, including when it carries on with the very approach the note argues against.
 
 Answer with exactly one word: STALE or CURRENT.`
 
@@ -287,7 +288,8 @@ export const register: Register = (on, options) => {
       const shown = all.slice(await read($, shownFrom))
       const note = shown.at(-1)
       const isUntouched = !shown.some(l => l.from === 'you')
-      if (note?.seen !== undefined && isUntouched && (await isOvertaken($, note.text, note.seen))) await update($, shownFrom, () => all.length)
+      // Notes from before 0.6.0 carry no `seen`: judge them against the whole session.
+      if (note?.from === 'metacognizer' && isUntouched && (await isOvertaken($, note.text, note.seen ?? 0))) await update($, shownFrom, () => all.length)
       return result
     }
     const run = (await read($, started))[e.agentId]
