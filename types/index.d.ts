@@ -9,6 +9,8 @@ export type Line = {
   isSentToClaude?: true;
   /** How many session messages there were when this note went up: the work after that is what can overtake it. */
   seen?: number;
+  /** The metacognizer agent that wrote it, so the event log can follow the note. */
+  run?: string;
 };
 
 /** What a metacognizer agent was started for: a check of the session, a reply to the person, or the working agent consulting it. */

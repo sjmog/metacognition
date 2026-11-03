@@ -47,7 +47,18 @@ function engine(on: On) {
   on('session.turns', () => ({ value: 0 }))
   on('agent.list', () => ({ value: [] }))
   const manifest = { version: '0.7.0' }
-  on('fs.read', () => ({ value: JSON.stringify(manifest) }))
+  const files: Record<string, string> = {}
+  on('fs.read', (_, e) => {
+    if (e.path.endsWith('plugin.json')) return { value: JSON.stringify(manifest) }
+    const text = files[e.path]
+    if (text === undefined) throw new Error('ENOENT')
+    return { value: text }
+  })
+  on('fs.write', (_, e) => {
+    files[e.path] = e.text
+    return { value: undefined }
+  })
+  mock.env(on, { HOME: '/home/sam' })
   const commands: string[] = []
   on('command.run', (_, e) => {
     commands.push(e.command)
@@ -60,7 +71,8 @@ function engine(on: On) {
     const { Text } = $.ui.resolve(e)
     return <Text>engine</Text>
   })
-  return { clock: mock.clock(on), spawns, defined, manifest, commands }
+  const events = () => (files['/home/sam/.claude/metacognition/session-1.jsonl'] ?? '').trim().split('\n').filter(Boolean).map(l => JSON.parse(l))
+  return { clock: mock.clock(on), spawns, defined, manifest, commands, events }
 }
 
 test('the tenth main-loop call after a prompt starts one check', async ($, on) => {
@@ -172,4 +184,16 @@ test('a newer version in the folder reloads the session, and the same version do
 
   await clock.advance(30 * 60 * 1000)
   expect(commands.filter(c => c === 'reload-plugins').length).toBe(1)
+})
+
+test("what happens to a run is kept in the session's event log, one line each", async ($, on) => {
+  const { clock, events } = engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.command.run(run('is there a simpler way?'))
+  await $.command.run(run('now'))
+  await clock.settle()
+  expect(events()).toEqual([
+    expect.objectContaining({ event: 'not-started', kind: 'reply', by: 'person', version: '0.7.0' }),
+    expect.objectContaining({ event: 'not-started', kind: 'check', by: 'meta now' }),
+  ])
 })

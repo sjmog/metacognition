@@ -99,10 +99,31 @@ const CONSULT = `Consult the metacognizer: a fresh agent that reads this session
 
 const FOR_CLAUDE = 'The metacognizer (a fresh agent watching this session for a higher-level move) and I discussed this:'
 
+// A consult answer is already in the agent's conversation, so its detail isn't sent again.
 const forClaude = (lines: Line[]) =>
-  `${FOR_CLAUDE}\n\n${transcript(lines)}\n\nRun the cheap check it names before deciding. If it holds, change course; if not, say why in a line.`
+  `${FOR_CLAUDE}\n\n${transcript(lines.map(l => (l.isSentToClaude ? { from: l.from, text: l.text } : l)))}\n\nRun the cheap check it names before deciding. If it holds, change course; if not, say why in a line.`
 
 const version = async ($: EngineInterface) => String(JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)).version)
+
+// What happens to a note in the band (dismissed, cleared as stale, told) never reaches the transcript, so each
+// event is kept as a line in ~/.claude/metacognition/<session id>.jsonl for later review. Writes run one at a
+// time, as each rewrites the file.
+let writing: Promise<void> = Promise.resolve()
+let loadedVersion = ''
+function record($: EngineInterface, event: string, data: Record<string, unknown> = {}) {
+  writing = writing
+    .then(async () => {
+      const home = await $.env.get('HOME')
+      if (home === undefined) return
+      const path = `${home}/.claude/metacognition/${await $.session.id()}.jsonl`
+      const line = JSON.stringify({ at: new Date(await $.clock.now()).toISOString(), version: loadedVersion, event, ...data })
+      await $.fs.write(path, `${await $.fs.read(path).catch(() => '')}${line}\n`)
+    })
+    .catch(() => undefined)
+  return writing
+}
+
+const runsOf = (lines: Line[]) => lines.flatMap(l => (l.run === undefined ? [] : [l.run]))
 
 const say = ($: EngineInterface, line: Line) => update($, thread, lines => [...lines, line])
 
@@ -113,8 +134,13 @@ async function isBusy($: EngineInterface, finished?: string) {
   return agents.some(a => a.type === AGENT && a.id !== finished && (a.status === 'pending' || a.status === 'running'))
 }
 
-async function start($: EngineInterface, kind: RunKind, question?: string, finished?: string) {
-  if (await isBusy($, finished)) return false
+type StartedBy = 'tenth call' | 'meta now' | 'consult' | 'person'
+
+async function start($: EngineInterface, kind: RunKind, by: StartedBy, { question, finished }: { question?: string; finished?: string } = {}) {
+  if (await isBusy($, finished)) {
+    await record($, 'skipped', { kind, by, reason: 'busy' })
+    return false
+  }
   const messages = await $.session.messages()
   const brief = session(await read($, asks), messages, await $.session.cwd(), await $.session.id(), await $.clock.now())
   const asked = question === undefined ? '' : `The working agent is consulting you and asks: ${question}\n\n`
@@ -123,9 +149,11 @@ async function start($: EngineInterface, kind: RunKind, question?: string, finis
   const agentId = spawn.agentId
   if (agentId === undefined) {
     $.ui.toast(`Metacognition could not start: ${spawn.deny ?? 'no agent'}`)
+    await record($, 'not-started', { kind, by, reason: spawn.deny ?? 'no agent' })
     return false
   }
   await update($, started, runs => ({ ...runs, [agentId]: { kind, seen: messages.length } }))
+  await record($, 'started', { run: agentId, kind, by })
   return true
 }
 
@@ -163,9 +191,15 @@ async function isOvertaken($: EngineInterface, note: string, seen: number) {
 const append = ($: EngineInterface, text: string) => $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
 
 // Mid-turn the working agent reads an appended row at its next step; idle, only a prompt reaches it.
-async function deliver($: EngineInterface, text: string) {
-  if (await read($, isWorking)) await append($, text)
-  else await $.prompt.submit({ text })
+// A row appended during the turn's last reply is never read; the log's `running turn` lets a review count those.
+async function deliver($: EngineInterface, run: string, text: string) {
+  if (await read($, isWorking)) {
+    await append($, text)
+    await record($, 'delivered', { run, via: 'running turn' })
+  } else {
+    await $.prompt.submit({ text })
+    await record($, 'delivered', { run, via: 'prompt' })
+  }
 }
 
 async function finish($: EngineInterface, agentId: string, { kind, seen }: Run, answer: string | null) {
@@ -176,24 +210,29 @@ async function finish($: EngineInterface, agentId: string, { kind, seen }: Run, 
   }
   const note = point(text)
   const isPoint = text !== '' && !(kind !== 'reply' && text.startsWith(AGREE))
-  if (isPoint && !(kind === 'check' && (await isOvertaken($, note.text, seen)))) {
+  if (!isPoint) await record($, 'answered', { run: agentId, kind, outcome: answer === null ? 'no answer' : 'agree' })
+  else if (kind === 'check' && (await isOvertaken($, note.text, seen)))
+    await record($, 'answered', { run: agentId, kind, outcome: 'overtaken on arrival', note: note.text })
+  else {
     const shownAt = (await $.session.messages()).length
-    await say($, kind === 'consult' ? { ...note, isSentToClaude: true, seen: shownAt } : kind === 'check' ? { ...note, seen: shownAt } : note)
+    const line = { ...note, run: agentId }
+    await say($, kind === 'consult' ? { ...line, isSentToClaude: true, seen: shownAt } : kind === 'check' ? { ...line, seen: shownAt } : line)
+    await record($, 'answered', { run: agentId, kind, outcome: 'shown', note: note.text })
   }
   // A bare AGREE read as an endorsement of the agent's design, and woke an idle agent for one word.
   if (kind === 'consult' && text.startsWith(AGREE))
     await append($, 'The metacognizer found no higher-level move. That is not a review of your design or your numbers; weigh those yourself.')
-  else if (kind === 'consult' && text !== '') await deliver($, `The metacognizer answered your consult:\n\n${text}`)
-  if ((await read($, thread)).at(-1)?.from === 'you') await start($, 'reply', undefined, agentId)
+  else if (kind === 'consult' && text !== '') await deliver($, agentId, `The metacognizer answered your consult:\n\n${text}`)
+  if ((await read($, thread)).at(-1)?.from === 'you') await start($, 'reply', 'person', { finished: agentId })
 }
 
 async function discuss($: EngineInterface, text: string) {
   if (text.trim() === '') return
   await say($, { from: 'you', text })
-  await start($, 'reply')
+  await start($, 'reply', 'person')
 }
 
-const checkSoon = ($: EngineInterface) => $.clock.after(0, () => void start($, 'check'))
+const checkSoon = ($: EngineInterface, by: StartedBy) => $.clock.after(0, () => void start($, 'check', by))
 
 export const register: Register = (on, options) => {
   const { model, effort } = options
@@ -226,6 +265,7 @@ export const register: Register = (on, options) => {
     // A running session keeps the code it loaded. When a newer version lands in the plugin's folder,
     // reload once the session is idle, so a release reaches every session without a manual /reload-plugins.
     const loaded = await version($)
+    loadedVersion = loaded
     const timer = $.clock.every(RELOAD_CHECK_MS, () => void (async () => {
       if ((await version($)) === loaded) return
       // The command waits for the session to go idle; queue it once, not once per check of a long turn.
@@ -240,7 +280,7 @@ export const register: Register = (on, options) => {
   on('tool.call', { tool: TOOL }, async ($, e) => {
     if (!(await read($, isOn))) return { result: 'Metacognition is off for this session. Carry on.' }
     const question = typeof e.question === 'string' ? e.question : undefined
-    if (!(await start($, 'consult', question)))
+    if (!(await start($, 'consult', 'consult', { question })))
       return { result: 'The metacognizer could not start (it may be busy with another check). Carry on; consult again later if it still matters.' }
     if (question !== undefined) await say($, { from: 'claude', text: question })
     return { result: 'The metacognizer is looking. Its answer will be added to this conversation in a minute or two; carry on meanwhile.' }
@@ -255,7 +295,7 @@ export const register: Register = (on, options) => {
     if (!(await read($, isOn))) return { text: 'Metacognition is off for this session. /meta on to turn it on.' }
     if (arg === '') return { text: 'Metacognition is on. /meta <question> asks it, /meta now checks at once, /meta off turns it off.' }
     if (arg === 'now') {
-      checkSoon($)
+      checkSoon($, 'meta now')
       return { text: 'Metacognition is checking.' }
     }
     await discuss($, arg)
@@ -282,7 +322,7 @@ export const register: Register = (on, options) => {
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
     if (e.agentId !== undefined || !(await read($, isOn))) return result
-    if ((await update($, callsSincePrompt, n => n + 1)) === CHECK_AFTER_CALLS) checkSoon($)
+    if ((await update($, callsSincePrompt, n => n + 1)) === CHECK_AFTER_CALLS) checkSoon($, 'tenth call')
     return result
   })
 
@@ -301,12 +341,18 @@ export const register: Register = (on, options) => {
       const note = shown.at(-1)
       const isUntouched = !shown.some(l => l.from === 'you')
       // Notes from before 0.6.0 carry no `seen`: judge them against the whole session.
-      if (note?.from === 'metacognizer' && isUntouched && (await isOvertaken($, note.text, note.seen ?? 0))) await update($, shownFrom, () => all.length)
+      if (note?.from === 'metacognizer' && isUntouched && (await isOvertaken($, note.text, note.seen ?? 0))) {
+        await update($, shownFrom, () => all.length)
+        await record($, 'cleared as stale', { runs: runsOf(shown) })
+      }
       return result
     }
     const run = (await read($, started))[e.agentId]
     if (run === undefined) return result
-    if (e.reason !== 'answer') $.ui.toast(`Metacognition ${run.kind} ended: ${e.reason}`)
+    if (e.reason !== 'answer') {
+      $.ui.toast(`Metacognition ${run.kind} ended: ${e.reason}`)
+      await record($, 'ended', { run: e.agentId, kind: run.kind, reason: e.reason })
+    }
     await finish($, e.agentId, run, e.reason === 'answer' ? e.answer : null)
     return result
   })
@@ -364,9 +410,17 @@ export const register: Register = (on, options) => {
             onPress={async () => {
               await $.prompt.fill({ text: forClaude(lines), mode: 'insert' })
               await update($, shownFrom, () => all.length)
+              await record($, 'told', { runs: runsOf(lines) })
             }}
           />
-          <Button key="dismiss" label="Dismiss" onPress={() => void update($, shownFrom, () => all.length)} />
+          <Button
+            key="dismiss"
+            label="Dismiss"
+            onPress={async () => {
+              await update($, shownFrom, () => all.length)
+              await record($, 'dismissed', { runs: runsOf(lines) })
+            }}
+          />
         </Box>
       </Box>
     )
