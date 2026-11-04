@@ -7,7 +7,7 @@ export type Line = {
   detail?: string;
   /** Set on an answer to the working agent's consult: the agent was given it in full. */
   isSentToClaude?: true;
-  /** How many session messages there were when this note went up: the work after that is what can overtake it. */
+  /** How many session messages the brief behind this note was built from: anything after that can overtake it, including work done while the metacognizer was thinking. */
   seen?: number;
   /** The metacognizer agent that wrote it, so the event log can follow the note. */
   run?: string;

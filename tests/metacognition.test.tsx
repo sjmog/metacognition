@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
-import type { On, SessionMessage } from 'claude-code'
+import type { On } from 'claude-code'
 
 const BAND = {
   plugin: 'metacognition',
@@ -14,9 +14,17 @@ const BAND = {
   },
 } as const
 
-const MESSAGES: SessionMessage[] = [
-  { role: 'user', text: 'Export the notes as CSV.', toolUses: [] },
-  { role: 'assistant', text: 'I will write a new CSV exporter.', toolUses: [{ tool_use_id: 't1', tool: 'Edit', input: { file_path: 'export.ts' } }] },
+// The conversation as $.session.messages({ as: 'api' }) gives it: an update between tool calls is a thinking block.
+const MESSAGES: { role: 'user' | 'assistant'; content: { type: string; [field: string]: unknown }[] }[] = [
+  { role: 'user', content: [{ type: 'text', text: 'Export the notes as CSV.' }] },
+  {
+    role: 'assistant',
+    content: [
+      { type: 'thinking', thinking: 'Checked: no exporter exists yet, so writing one.' },
+      { type: 'text', text: 'I will write a new CSV exporter.' },
+      { type: 'tool_use', id: 't1', name: 'Edit', input: { file_path: 'export.ts' } },
+    ],
+  },
 ]
 
 const calls = async (call: () => Promise<unknown>, n: number) => {
@@ -110,6 +118,7 @@ test("the brief lists the person's own asks once each, and leaves out bare comma
   expect(asked.indexOf('Keep the header row.')).toBeLessThan(asked.indexOf('byte for byte'))
   expect(asked).not.toMatch(/reload-plugins|old exporter|discussed this/)
   expect(spawns[0]).toMatch(/~\/\.claude\/projects\/\*\/session-1\.jsonl/)
+  expect(spawns[0]).toMatch(/says and thinks[\s\S]*no exporter exists yet[\s\S]*I will write a new CSV exporter[\s\S]*- Edit export\.ts/)
 })
 
 test('a burst of parallel calls starts one check', async ($, on) => {

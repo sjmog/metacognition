@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register, SessionMessage, ToolUseSummary } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
 
 import type { Line, Run, RunKind } from '../types'
 
@@ -35,7 +35,7 @@ Before judging the current approach, list for yourself two or three other ways t
 
 Then check the yardstick: what the session measures, tests against or will call done. Is that what the person cares about? A gold set the person never judged, a merged change with no check that the real number moved, or a monitor watching the wrong signal all mean the outcome is framed wrong.
 
-Before you claim something is unexplained, unplanned or not yet tried, grep the session's transcript for it. A bug or gap the working agent has already reported is not a new move.
+Before you claim something is unexplained, unplanned or not yet tried, grep the session's transcript for it. The agent's updates between tool calls are saved there as thinking blocks, so search those as well as text. A bug or gap the working agent has already reported is not a new move.
 
 If the session's direction is already the simple, high-level one, or you would not bet that your point changes what the person does, your final message is exactly: ${AGREE}
 
@@ -49,27 +49,50 @@ Measure where the time goes before adding parallel searches. A one-line change m
 
 const REPLY = `The person is talking to you, not to the agent doing the work. Reply to their last message as the metacognizer in two or three short sentences of very plain words. Look at the code if it helps you answer.`
 
-// A Workflow's input has none of the usual fields; its script opens with its name and description.
-const call = (use: ToolUseSummary) => {
-  const { file_path, command, pattern, description } = use.input
-  const what = String(file_path ?? command ?? pattern ?? description ?? JSON.stringify(use.input)).replace(/\s+/g, ' ')
-  return `- ${use.tool} ${what.slice(0, 120)}`
+type Block = { type: string; [field: string]: unknown }
+type Turn = { role: 'user' | 'assistant'; content: Block[] }
+
+// The conversation as the next request carries it. Its thinking blocks hold the agent's updates between tool
+// calls, which Claude Code saves as "narration" rather than text, and any thinking a session keeps visible.
+async function conversation($: EngineInterface): Promise<Turn[]> {
+  const turns = await $.session.messages({ as: 'api' })
+  return Array.isArray(turns) ? turns : []
 }
+
+// A Workflow's input has none of the usual fields; its script opens with its name and description.
+function call(block: Block) {
+  const input = typeof block.input === 'object' && block.input !== null ? (block.input as Record<string, unknown>) : {}
+  const { file_path, command, pattern, description } = input
+  const what = String(file_path ?? command ?? pattern ?? description ?? JSON.stringify(input)).replace(/\s+/g, ' ')
+  return `- ${String(block.name)} ${what.slice(0, 120)}`
+}
+
+// Everything the working agent wrote, thought and called, in order.
+const agentLines = (turns: Turn[]) =>
+  turns
+    .flatMap(t =>
+      t.role !== 'assistant'
+        ? []
+        : t.content.flatMap(b =>
+            b.type === 'text' && typeof b.text === 'string' ? [{ isCall: false, text: b.text.trim() }]
+            : b.type === 'thinking' && typeof b.thinking === 'string' ? [{ isCall: false, text: b.thinking.trim() }]
+            : b.type === 'tool_use' ? [{ isCall: true, text: call(b) }]
+            : [],
+          ),
+    )
+    .filter(line => line.text !== '')
 
 const clipped = (text: string, n: number) => (text.length <= n ? text : `${text.slice(0, n / 2)}\n…\n${text.slice(-n / 2)}`)
 
 // What was asked and what was done, but little of the session's reasoning,
 // so the metacognizer isn't pulled down the same funnel.
-function session(asked: string[], messages: SessionMessage[], cwd: string, id: string, now: number) {
-  const said = messages
-    .filter(m => m.role === 'assistant' && m.text.trim() !== '')
-    .map(m => m.text.trim())
-    .join('\n\n')
-    .slice(-6000)
-  const calls = messages.flatMap(m => m.toolUses).slice(-40).map(call)
+function session(asked: string[], turns: Turn[], cwd: string, id: string, now: number) {
+  const lines = agentLines(turns)
+  const said = lines.filter(line => !line.isCall).map(line => line.text).join('\n\n').slice(-6000)
+  const calls = lines.filter(line => line.isCall).map(line => line.text).slice(-40)
   return [
     `## What the person asked, in order\n\n${asked.map(text => clipped(text, 6000)).join('\n\n---\n\n')}`,
-    `## What the working agent says it is doing (its own words, latest last; it may be heading the wrong way)\n\n${said}`,
+    `## What the working agent says and thinks it is doing (its own words and updates, latest last; it may be heading the wrong way)\n\n${said}`,
     `## Its latest tool calls\n\n${calls.join('\n')}`,
     `Now: ${new Date(now).toISOString()}. Working directory: ${cwd}; the tool calls above show which directories and files the work touched, so look there for the change. The session's full transcript, with timestamps and anything asked before this list began, is ~/.claude/projects/*/${id}.jsonl.`,
   ].join('\n\n')
@@ -141,8 +164,8 @@ async function start($: EngineInterface, kind: RunKind, by: StartedBy, { questio
     await record($, 'skipped', { kind, by, reason: 'busy' })
     return false
   }
-  const messages = await $.session.messages()
-  const brief = session(await read($, asks), messages, await $.session.cwd(), await $.session.id(), await $.clock.now())
+  const turns = await conversation($)
+  const brief = session(await read($, asks), turns, await $.session.cwd(), await $.session.id(), await $.clock.now())
   const asked = question === undefined ? '' : `The working agent is consulting you and asks: ${question}\n\n`
   const prompt = `${brief}\n\n${asked}${task(kind, await read($, thread))}`
   const spawn = await $.agent.spawn({ subagentType: AGENT, prompt, description: `Metacognition ${kind}` })
@@ -152,7 +175,7 @@ async function start($: EngineInterface, kind: RunKind, by: StartedBy, { questio
     await record($, 'not-started', { kind, by, reason: spawn.deny ?? 'no agent' })
     return false
   }
-  await update($, started, runs => ({ ...runs, [agentId]: { kind, seen: messages.length } }))
+  await update($, started, runs => ({ ...runs, [agentId]: { kind, seen: turns.length } }))
   await record($, 'started', { run: agentId, kind, by })
   return true
 }
@@ -171,18 +194,11 @@ Is the note stale now? It is stale if anything since the note has overtaken it: 
 
 Answer with exactly one word: STALE or CURRENT.`
 
-// What the working agent said and did in the given messages, latest last.
-const activity = (messages: SessionMessage[]) =>
-  messages
-    .flatMap(m => (m.role === 'assistant' ? [m.text.trim(), ...m.toolUses.map(call)] : []))
-    .filter(text => text !== '')
-    .join('\n')
-    .slice(-6000)
 
 // A check takes a minute or two and a note can stand for hours; the working agent keeps going meanwhile.
 // A small fast model judges whether what it did after `seen` has overtaken the note. No clear answer, the note stays.
 async function isOvertaken($: EngineInterface, note: string, seen: number) {
-  const since = activity((await $.session.messages()).slice(seen))
+  const since = agentLines((await conversation($)).slice(seen)).map(line => line.text).join('\n').slice(-6000)
   if (since === '') return false
   const answer = await $.model.complete({ model: 'haiku', prompt: STALE(note, since), maxTokens: 20 })
   return answer.isAnswered && /STALE/.test(answer.text)
@@ -214,9 +230,8 @@ async function finish($: EngineInterface, agentId: string, { kind, seen }: Run, 
   else if (kind === 'check' && (await isOvertaken($, note.text, seen)))
     await record($, 'answered', { run: agentId, kind, outcome: 'overtaken on arrival', note: note.text })
   else {
-    const shownAt = (await $.session.messages()).length
     const line = { ...note, run: agentId }
-    await say($, kind === 'consult' ? { ...line, isSentToClaude: true, seen: shownAt } : kind === 'check' ? { ...line, seen: shownAt } : line)
+    await say($, kind === 'consult' ? { ...line, isSentToClaude: true, seen } : kind === 'check' ? { ...line, seen } : line)
     await record($, 'answered', { run: agentId, kind, outcome: 'shown', note: note.text })
   }
   // A bare AGREE read as an endorsement of the agent's design, and woke an idle agent for one word.
