@@ -9,6 +9,8 @@ const TOOL = 'mcp__metacognition__consult'
 const TIP_EVERY_PROMPTS = 10
 const RELOAD_CHECK_MS = 5 * 60 * 1000
 const CHECK_AFTER_CALLS = 10
+// How much of the working agent's latest words and updates a brief carries; older ones are in the transcript.
+const AGENT_WORDS_CHARS = 20_000
 
 const isOn = atom({ plugin: 'metacognition', key: 'isOn' } as const, true)
 const isWorking = atom({ plugin: 'metacognition', key: 'isWorking' } as const, false)
@@ -88,7 +90,7 @@ const clipped = (text: string, n: number) => (text.length <= n ? text : `${text.
 // so the metacognizer isn't pulled down the same funnel.
 function session(asked: string[], turns: Turn[], cwd: string, id: string, now: number) {
   const lines = agentLines(turns)
-  const said = lines.filter(line => !line.isCall).map(line => line.text).join('\n\n').slice(-6000)
+  const said = lines.filter(line => !line.isCall).map(line => line.text).join('\n\n').slice(-AGENT_WORDS_CHARS)
   const calls = lines.filter(line => line.isCall).map(line => line.text).slice(-40)
   return [
     `## What the person asked, in order\n\n${asked.map(text => clipped(text, 6000)).join('\n\n---\n\n')}`,
