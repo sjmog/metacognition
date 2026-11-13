@@ -41,7 +41,7 @@ Before you claim something is unexplained, unplanned or not yet tried, grep the 
 
 If the session's direction is already the simple, high-level one, or you would not bet that your point changes what the person does, your final message is exactly: ${AGREE}
 
-Otherwise your final message opens with what the person will read: at most three short sentences and under 50 words, in words someone outside the code would follow, addressed to the person as you, saying what to do instead and why it is simpler. Start straight in with the point itself: no heading, label, numbering, jargon, code names, lists or file paths.
+Otherwise your final message opens with what the person will read: at most three short sentences and under 50 words, in words someone outside the code would follow, addressed to the person as you, saying what to do instead and why it is simpler. Start straight in with the point itself: no heading, label, numbering, jargon, code names, lists or file paths. If your move would reverse something the person asked for or decided, say so first: "You asked for X, but…".
 After that, a line holding only ---, and below it, for the working agent: your fuller reasoning, the evidence you found (files, commands, what they showed) and the first cheap step that would confirm the move.
 
 For example:
@@ -126,7 +126,7 @@ const FOR_CLAUDE = 'The metacognizer (a fresh agent watching this session for a 
 
 // A consult answer is already in the agent's conversation, so its detail isn't sent again.
 const forClaude = (lines: Line[]) =>
-  `${FOR_CLAUDE}\n\n${transcript(lines.map(l => (l.isSentToClaude ? { from: l.from, text: l.text } : l)))}\n\nRun the cheap check it names before deciding. If it holds, change course; if not, say why in a line.`
+  `${FOR_CLAUDE}\n\n${transcript(lines.map(l => (l.isSentToClaude ? { from: l.from, text: l.text } : l)))}\n\nCheck its premise first by running the cheap check it names. If it holds, change course; if not, say why in a line. If it would reverse something I asked for or decided, ask me before changing course.`
 
 const version = async ($: EngineInterface) => String(JSON.parse(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`)).version)
 
@@ -338,7 +338,13 @@ export const register: Register = (on, options) => {
   // they work inside a direction the main loop chose. update() resolves what it wrote, so one call sees 10.
   on('tool.call', async ($, e, next) => {
     const result = await next(e)
-    if (e.agentId !== undefined || !(await read($, isOn))) return result
+    if (e.agentId !== undefined) return result
+    // Decisions the person makes in the agent's question dialogs never pass through prompt.submit.
+    if (String(e.tool) === 'AskUserQuestion' && typeof result.text === 'string') {
+      const answer = `(answering the agent's question) ${result.text}`
+      await update($, asks, list => [...list, answer])
+    }
+    if (!(await read($, isOn))) return result
     if ((await update($, callsSincePrompt, n => n + 1)) === CHECK_AFTER_CALLS) checkSoon($, 'tenth call')
     return result
   })

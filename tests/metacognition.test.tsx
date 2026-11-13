@@ -72,6 +72,7 @@ function engine(on: On) {
     commands.push(e.command)
     return { text: '' }
   })
+  on('tool.call', { tool: 'AskUserQuestion' }, () => ({ result: {}, text: 'User has answered your questions: "Which way?"="Retry splits"' }))
   on('tool.call', () => ({ result: {} }))
   on('ui.toast', () => ({ value: undefined }))
   on('prompt.submit', (_, e) => ({ text: e.text }))
@@ -205,4 +206,14 @@ test("what happens to a run is kept in the session's event log, one line each", 
     expect.objectContaining({ event: 'not-started', kind: 'reply', by: 'person', version: '0.7.0' }),
     expect.objectContaining({ event: 'not-started', kind: 'check', by: 'meta now' }),
   ])
+})
+
+test("the person's answers in the agent's question dialogs reach the brief as asks", async ($, on) => {
+  const { clock, spawns } = engine(on)
+  await $.session.start({ cwd: '/repo', surface: 'terminal', isInteractive: true })
+  await $.tool.call({ tool: 'AskUserQuestion', questions: [{ question: 'Which way?', header: 'Way', options: [{ label: 'Retry splits', description: '' }, { label: 'Either order', description: '' }], multiSelect: false }] })
+  await $.command.run(run('now'))
+  await clock.settle()
+  const asked = (spawns[0] ?? '').split('## What the working agent')[0] ?? ''
+  expect(asked).toMatch(/answering the agent's question[\s\S]*Retry splits/)
 })
